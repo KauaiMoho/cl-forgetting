@@ -1,66 +1,11 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
+from utils import data, utils
+from models import models
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 TASK_RANGES = [(0, 1), (2, 4), (5, 7), (8, 9)]
-
-def get_dynamic_mask(logits, allowed_classes):
-    mask = torch.full(logits.shape, float('-inf'), device=DEVICE)
-    if not allowed_classes:
-        return torch.zeros_like(logits)
-    for c in allowed_classes:
-        mask[:, c] = 0.0
-    return mask
-
-def normalize_scores(scores):
-    vals = torch.stack([s.detach().clone().float() for s in scores])
-    return vals / (1.0 + vals + 1e-8)
-
-class MainNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fc1 = nn.Linear(28 * 28, 256)
-        self.bn1 = nn.LayerNorm(256)
-        self.fc2 = nn.Linear(256, 256)
-        self.bn2 = nn.LayerNorm(256)
-        self.fc3 = nn.Linear(256, 128)
-        self.bn3 = nn.LayerNorm(128)
-        self.fc4 = nn.Linear(128, 10)
-        self.dropout = nn.Dropout(0.15)
-
-    def forward(self, x):
-        x = x.view(-1, 28 * 28)
-        x1 = F.relu(self.bn1(self.fc1(x)))
-        x2 = F.relu(self.bn2(self.fc2(x1)))
-        x2 = self.dropout(x2 + x1)
-        x3 = F.relu(self.bn3(self.fc3(x2)))
-        return self.fc4(x3)
-
-    def get_layers(self):
-        return [self.fc1, self.fc2, self.fc3, self.fc4]
-
-
-class Hippocampus(nn.Module):
-    def __init__(self, num_layers, feature_dim=6):
-        super().__init__()
-        self.num_layers = num_layers
-        self.net = nn.Sequential(
-            nn.Linear(num_layers * feature_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, num_layers),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, layer_features):
-        x = layer_features.view(1, -1)
-        return self.net(x).squeeze(0) * 0.999 + 0.0001
 
 class SITracker:
     def __init__(self, model):
@@ -85,81 +30,6 @@ class SITracker:
                     scores.append(score.mean())
         return torch.stack(scores).mean() if scores else torch.tensor(0.0, device=DEVICE)
 
-
-def compute_fisher_fast(model, loader, task_classes, max_batches=2):
-    model.eval()
-    layer_accum = [0.0] * len(model.get_layers())
-    n_batches = 0
-    for images, labels in loader:
-        if n_batches >= max_batches:
-            break
-        images, labels = images.to(DEVICE), labels.to(DEVICE)
-        model.zero_grad()
-        out = model(images)
-        
-        # batch_classes = set(labels.cpu().numpy())
-        mask = get_dynamic_mask(out, task_classes)
-        F.cross_entropy(out + mask, labels).backward()
-        for i, layer in enumerate(model.get_layers()):
-            grads = [p.grad.detach().pow(2).mean() for p in layer.parameters() if p.grad is not None]
-            if grads:
-                layer_accum[i] += torch.stack(grads).mean().item()
-        n_batches += 1
-    model.zero_grad()
-    return [torch.tensor(s / max(n_batches, 1), device=DEVICE) for s in layer_accum]
-
-
-def compute_mas_fast(model, loader, max_batches=2):
-    model.eval()
-    layer_accum = [0.0] * len(model.get_layers())
-    n_batches = 0
-    for images, _ in loader:
-        if n_batches >= max_batches:
-            break
-        images = images.to(DEVICE)
-        model.zero_grad()
-        out = model(images)
-        out.pow(2).sum().backward()
-        for i, layer in enumerate(model.get_layers()):
-            grads = [p.grad.detach().pow(2).mean() for p in layer.parameters() if p.grad is not None]
-            if grads:
-                layer_accum[i] += torch.stack(grads).mean().item()
-        n_batches += 1
-    model.zero_grad()
-    return [torch.tensor(s / max(n_batches, 1), device=DEVICE) for s in layer_accum]
-
-
-def compute_gradient_conflict_fast(model, loader, current_task_classes, old_images, old_labels, old_classes, max_batches=2):
-    model.eval()
-    layers = model.get_layers()
-    model.zero_grad()
-    old_out = model(old_images)
-    mask_old = get_dynamic_mask(old_out, old_classes)
-    F.cross_entropy(old_out + mask_old, old_labels).backward()
-    old_grads = [
-        torch.cat([p.grad.detach().flatten() for p in layer.parameters() if p.grad is not None]) for layer in layers
-    ]
-    model.zero_grad()
-
-    new_grad_accum = [torch.zeros_like(g) for g in old_grads]
-    n_batches = 0
-    for images, labels in loader:
-        if n_batches >= max_batches:
-            break
-        images, labels = images.to(DEVICE), labels.to(DEVICE)
-        model.zero_grad()
-        out = model(images)
-        # batch_classes = set(labels.cpu().numpy())
-        mask_new = get_dynamic_mask(out, current_task_classes)
-        F.cross_entropy(out + mask_new, labels).backward()
-        for i, layer in enumerate(layers):
-            g = torch.cat([p.grad.detach().flatten() for p in layer.parameters() if p.grad is not None])
-            new_grad_accum[i] += g
-        n_batches += 1
-    model.zero_grad()
-    return [F.cosine_similarity(og.unsqueeze(0), (ng / max(n_batches, 1)).unsqueeze(0)).squeeze() 
-            for og, ng in zip(old_grads, new_grad_accum)]
-
 class ImportanceCache:
     def __init__(self):
         self.fisher = None
@@ -174,9 +44,9 @@ class ImportanceCache:
         self.cos = cos
 
     def build_features(self, num_layers, task_id):
-        fisher_n = normalize_scores(self.fisher)
-        mas_n = normalize_scores(self.mas)
-        si_n = normalize_scores(self.si)
+        fisher_n = utils.normalize_scores(self.fisher)
+        mas_n = utils.normalize_scores(self.mas)
+        si_n = utils.normalize_scores(self.si)
         cos_n = torch.stack([(c + 1.0) / 2.0 for c in self.cos])
         layer_pos = torch.tensor([i / max(num_layers - 1, 1) for i in range(num_layers)], device=DEVICE)
         task_ctx = torch.tensor(task_id / max(task_id, 1), device=DEVICE).expand(num_layers)
@@ -255,18 +125,15 @@ class ReplayBuffer:
             all_classes.update(c_set)
         return all_x, all_y, all_classes
 
-def train_meta_learning(
-    mainnet, hippocampus, importance_cache, si_tracker, replay_buffer,
-    train_loader, main_optimizer, hippocampus_optimizer, task_id, current_task_classes, epochs=4
-):
-    num_layers = len(mainnet.get_layers())
+def train_meta_learning(model, hippocampus, importance_cache, si_tracker, replay_buffer, train_loader, main_optimizer, hippocampus_optimizer, task_id, current_task_classes, epochs=4):
+    num_layers = len(model.get_layers())
     
-    fisher = compute_fisher_fast(mainnet, train_loader, current_task_classes)
-    mas = compute_mas_fast(mainnet, train_loader)
-    si = [si_tracker.layer_score(layer) for layer in mainnet.get_layers()]
+    fisher = utils.compute_fisher_fast(model, train_loader, current_task_classes)
+    mas = utils.compute_mas_fast(model, train_loader)
+    si = [si_tracker.layer_score(layer) for layer in model.get_layers()]
     if task_id > 0 and replay_buffer.has_data():
         old_x, old_y, old_c = replay_buffer.get_all_legacy_meta()
-        cos = compute_gradient_conflict_fast(mainnet, train_loader, current_task_classes, old_x, old_y, old_c)
+        cos = utils.compute_gradient_conflict_fast(model, train_loader, current_task_classes, old_x, old_y, old_c)
     else:
         cos = [torch.tensor(0.0, device=DEVICE)] * num_layers
     importance_cache.update(fisher, mas, si, cos)
@@ -282,46 +149,41 @@ def train_meta_learning(
             features = importance_cache.build_features(num_layers, task_id)
             plasticities = hippocampus(features)
             
-            baseline_loss = 0.0
             has_history = task_id > 0 and replay_buffer.has_data()
             
             if has_history:
                 rep_x, rep_y, rep_classes = replay_buffer.sample_worst_task(task_id, n=images.size(0))
-                mainnet.eval()
-                with torch.no_grad():
-                    val_out = mainnet(rep_x)
-                    val_mask = get_dynamic_mask(val_out, rep_classes)
-                    baseline_loss = F.cross_entropy(val_out + val_mask, rep_y).item()
 
-            mainnet.train()
+            model.train()
             main_optimizer.zero_grad()
-            out = mainnet(images)
+            out = model(images)
             
-            mask_curr = get_dynamic_mask(out, current_task_classes)
+            mask_curr = utils.get_dynamic_mask(out, current_task_classes)
             loss = F.cross_entropy(out + mask_curr, labels)
             loss.backward()
             
             with torch.no_grad():
-                for i, layer in enumerate(mainnet.get_layers()):
+                for i, layer in enumerate(model.get_layers()):
                     scale = plasticities[i].item()
                     for param in layer.parameters():
                         if param.grad is not None:
                             param.grad.mul_(scale)
             
             main_optimizer.step()
-            si_tracker.update(mainnet)
+            si_tracker.update(model)
             total_main_loss += loss.item()
             
             if has_history:
-                mainnet.eval()
-                mainnet.zero_grad()
-                val_out_old = mainnet(rep_x)
-                val_mask_old = get_dynamic_mask(val_out_old, rep_classes)
+                
+                model.eval()
+                model.zero_grad()
+                val_out_old = model(rep_x)
+                val_mask_old = utils.get_dynamic_mask(val_out_old, rep_classes)
                 loss_old = F.cross_entropy(val_out_old + val_mask_old, rep_y)
                 loss_old.backward(retain_graph=True)
 
                 old_grads = []
-                for layer in mainnet.get_layers():
+                for layer in model.get_layers():
                     g = torch.cat([
                         p.grad.detach().flatten()
                         for p in layer.parameters()
@@ -329,17 +191,16 @@ def train_meta_learning(
                     ])
                     old_grads.append(g)
 
-                mainnet.zero_grad()
-                mainnet.train()
-                mainnet.zero_grad()
+                model.zero_grad()
+                model.train()
 
-                out = mainnet(images)
-                mask_curr = get_dynamic_mask(out, current_task_classes)
+                out = model(images)
+                mask_curr = utils.get_dynamic_mask(out, current_task_classes)
                 loss_new = F.cross_entropy(out + mask_curr, labels)
                 loss_new.backward()
 
                 new_grads = []
-                for layer in mainnet.get_layers():
+                for layer in model.get_layers():
                     g = torch.cat([
                         p.grad.detach().flatten()
                         for p in layer.parameters()
@@ -347,7 +208,7 @@ def train_meta_learning(
                     ])
                     new_grads.append(g)
 
-                mainnet.zero_grad()
+                model.zero_grad()
 
                 meta_signal = 0.0
                 for g_old, g_new in zip(old_grads, new_grads):
@@ -371,8 +232,8 @@ def train_meta_learning(
 
                 hippocampus_optimizer.step()
                 
-        fisher = compute_fisher_fast(mainnet, train_loader, current_task_classes)
-        mas = compute_mas_fast(mainnet, train_loader)
+        fisher = utils.compute_fisher_fast(model, train_loader, current_task_classes)
+        mas = utils.compute_mas_fast(model, train_loader)
         importance_cache.update(fisher, mas, si, cos)
             
         meta_print = f"| Meta Delta: {total_meta_loss/step_count:.6f}" if task_id > 0 else ""
@@ -387,7 +248,7 @@ def evaluate(model, test_loader, eval_task_classes, eval_task_id):
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             out = model(images)
             
-            mask = get_dynamic_mask(out, eval_task_classes)
+            mask = utils.get_dynamic_mask(out, eval_task_classes)
             predicted = (out + mask).argmax(dim=1)
             
             total += labels.size(0)
@@ -397,28 +258,15 @@ def evaluate(model, test_loader, eval_task_classes, eval_task_id):
     return acc
 
 
-def get_dataloaders():
-    transform = transforms.ToTensor()
-    mnist_train = datasets.MNIST('./data', train=True, download=True, transform=transform)
-    mnist_test = datasets.MNIST('./data', train=False, download=True, transform=transform)
-
-    def subset(ds, lo, hi):
-        mask = (ds.targets >= lo) & (ds.targets <= hi)
-        return Subset(ds, torch.where(mask)[0])
-
-    train_loaders = [DataLoader(subset(mnist_train, lo, hi), batch_size=64, shuffle=True) for lo, hi in TASK_RANGES]
-    test_loaders = [DataLoader(subset(mnist_test, lo, hi), batch_size=64, shuffle=False) for lo, hi in TASK_RANGES]
-    return train_loaders, test_loaders
-
-
 if __name__ == "__main__":
     torch.manual_seed(17)
-    train_loaders, test_loaders = get_dataloaders()
+    # train_loaders, test_loaders = data.get_dataloaders_MNIST(TASK_RANGES)
+    train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
 
-    mainnet = MainNet().to(DEVICE)
+    mainnet = models.SimpleCNN().to(DEVICE)
     num_layers = len(mainnet.get_layers())
-    hippocampus = Hippocampus(num_layers).to(DEVICE)
-    replay_buffer = ReplayBuffer(250)
+    hippocampus = models.Hippocampus(num_layers).to(DEVICE)
+    replay_buffer = ReplayBuffer(200)
     si_tracker = SITracker(mainnet)
     importance_cache = ImportanceCache()
 
@@ -438,7 +286,7 @@ if __name__ == "__main__":
         
         train_meta_learning(
             mainnet, hippocampus, importance_cache, si_tracker, replay_buffer,
-            train_loader, main_optimizer, hippocampus_optimizer, task_id, current_classes, epochs=4
+            train_loader, main_optimizer, hippocampus_optimizer, task_id, current_classes, epochs=10
         )
         
         print(f"\nFinal Task {task_id + 1} Accuracy:")
