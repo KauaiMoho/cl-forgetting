@@ -3,6 +3,7 @@ import torch.nn.functional as F
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+#In the future try out a task classifier model to identify task boundaries
 def get_dynamic_mask(logits, allowed_classes):
     mask = torch.full(logits.shape, float('-inf'), device=DEVICE)
     if not allowed_classes:
@@ -56,34 +57,21 @@ def compute_mas_fast(model, loader, max_batches=2):
     model.zero_grad()
     return [torch.tensor(s / max(n_batches, 1), device=DEVICE) for s in layer_accum]
 
+def compute_consolidation_loss(model, importance_cache, param_snapshot):
+    if param_snapshot is None:
+        return torch.tensor(0.0, device=DEVICE)
 
-def compute_gradient_conflict_fast(model, loader, current_task_classes, old_images, old_labels, old_classes, max_batches=2):
-    model.eval()
+    importance = importance_cache.combined_importance()
     layers = model.get_layers()
-    model.zero_grad()
-    old_out = model(old_images)
-    mask_old = get_dynamic_mask(old_out, old_classes)
-    F.cross_entropy(old_out + mask_old, old_labels).backward()
-    old_grads = [
-        torch.cat([p.grad.detach().flatten() for p in layer.parameters() if p.grad is not None]) for layer in layers
-    ]
-    model.zero_grad()
+    total_loss = torch.tensor(0.0, device=DEVICE)
 
-    new_grad_accum = [torch.zeros_like(g) for g in old_grads]
-    n_batches = 0
-    for images, labels in loader:
-        if n_batches >= max_batches:
-            break
-        images, labels = images.to(DEVICE), labels.to(DEVICE)
-        model.zero_grad()
-        out = model(images)
-        # batch_classes = set(labels.cpu().numpy())
-        mask_new = get_dynamic_mask(out, current_task_classes)
-        F.cross_entropy(out + mask_new, labels).backward()
-        for i, layer in enumerate(layers):
-            g = torch.cat([p.grad.detach().flatten() for p in layer.parameters() if p.grad is not None])
-            new_grad_accum[i] += g
-        n_batches += 1
-    model.zero_grad()
-    return [F.cosine_similarity(og.unsqueeze(0), (ng / max(n_batches, 1)).unsqueeze(0)).squeeze() 
-            for og, ng in zip(old_grads, new_grad_accum)]
+    for i, layer in enumerate(layers):
+        layer_importance = importance[i]
+        for name, param in layer.named_parameters():
+            old_key = f"layer{i}_{name}"
+            if old_key not in param_snapshot:
+                continue
+            delta = (param - param_snapshot[old_key]).pow(2).sum()
+            total_loss = total_loss + layer_importance * delta
+
+    return total_loss

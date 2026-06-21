@@ -67,7 +67,7 @@ class SimpleCNN(nn.Module):
 
 
 class Hippocampus(nn.Module):
-    def __init__(self, num_layers, feature_dim=6):
+    def __init__(self, num_layers, feature_dim=5):
         super().__init__()
         self.num_layers = num_layers
         self.net = nn.Sequential(
@@ -77,9 +77,9 @@ class Hippocampus(nn.Module):
             nn.Linear(64, 32),
             nn.ReLU(),
             nn.Linear(32, num_layers),
-            nn.Sigmoid(),
         )
 
     def forward(self, layer_features):
         x = layer_features.view(1, -1)
-        return self.net(x).squeeze(0) * 0.999 + 0.0001
+        raw = self.net(x).squeeze(0)
+        return 0.05 + 0.95 * torch.sigmoid(raw)

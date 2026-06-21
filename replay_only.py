@@ -172,7 +172,8 @@ def evaluate(model, test_loader, eval_task_classes, eval_task_id):
 
 if __name__ == "__main__":
     torch.manual_seed(17)
-    train_loaders, test_loaders = data.get_dataloaders(TASK_RANGES)
+    # train_loaders, test_loaders = data.get_dataloaders_MNIST(TASK_RANGES)
+    train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
 
     mainnet = models.SimpleCNN().to(DEVICE)
     num_layers = len(mainnet.get_layers())
