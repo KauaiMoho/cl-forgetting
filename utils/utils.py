@@ -35,7 +35,7 @@ def compute_fisher_fast(model, loader, task_classes, max_batches=2):
                 layer_accum[i] += torch.stack(grads).mean().item()
         n_batches += 1
     model.zero_grad()
-    return [torch.tensor(s / max(n_batches, 1), device=DEVICE) for s in layer_accum]
+    return [torch.tensor(s / max(n_batches, 1), device=DEVICE) for s in layer_accum] # torch.zeros(len(layer_accum), device=DEVICE)
 
 
 def compute_mas_fast(model, loader, max_batches=2):
