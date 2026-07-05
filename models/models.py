@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class MainNet(nn.Module):
+class MNISTNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(28 * 28, 256)
@@ -25,7 +25,7 @@ class MainNet(nn.Module):
     def get_layers(self):
         return [self.fc1, self.fc2, self.fc3, self.fc4]
     
-class SimpleCNN(nn.Module):
+class CIFARNet(nn.Module):
     def __init__(self, num_classes=100):
         super().__init__()
 

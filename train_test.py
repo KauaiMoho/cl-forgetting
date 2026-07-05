@@ -89,13 +89,11 @@ def train(
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             step_count += 1
 
-            # ── hippocampus forward ─────────────────────────────────────────
             hippocampus.train()
             features = importance_cache.build_features(num_layers, task_id)
             plasticities = hippocampus(features)
             epoch_plasticities.append(plasticities.detach().cpu())
-
-            # ── main model forward + loss ───────────────────────────────────
+            
             model.train()
             optimizer.zero_grad()
             out = model(images)
@@ -111,7 +109,6 @@ def train(
             total_main_loss += task_loss.item()
             total_consolidation += consolidation_loss.item()
 
-            # ── grad norm signal for hippocampus ────────────────────────────
             layer_signals = []
             for layer in model.get_layers():
                 grads = [p.grad.detach().flatten() for p in layer.parameters() if p.grad is not None]
@@ -119,7 +116,6 @@ def train(
             layer_signals = torch.stack(layer_signals)
             layer_signals = layer_signals / (layer_signals.max() + 1e-8)
 
-            # ── scale gradients by plasticity ───────────────────────────────
             with torch.no_grad():
                 for i, layer in enumerate(model.get_layers()):
                     for param in layer.parameters():
@@ -129,9 +125,6 @@ def train(
             si_tracker.update(model)
             optimizer.step()
 
-            # ── hippocampus update ──────────────────────────────────────────
-            # high grad norm + late layer → high plasticity (learns new tasks)
-            # low grad norm + early layer → low plasticity (protects shared features)
             hippocampus_optimizer.zero_grad()
             combined_signal = 0.5 * layer_signals + 0.5 * position_prior
             baseline = combined_signal.mean()
@@ -174,8 +167,11 @@ def evaluate(model, test_loader, eval_task_classes, eval_task_id):
 
 if __name__ == "__main__":
     torch.manual_seed(17)
-    train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
-    mainnet = models.SimpleCNN().to(DEVICE)
+    # train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
+    # mainnet = models.CIFARNet().to(DEVICE)
+
+    train_loaders, test_loaders = data.get_dataloaders_MNIST([(0, 1), (2, 4), (5, 7), (8, 9)])
+    mainnet = models.MNISTNet().to(DEVICE)
 
     num_layers = len(mainnet.get_layers())
     hippocampus = models.Hippocampus(num_layers).to(DEVICE)
@@ -215,7 +211,7 @@ if __name__ == "__main__":
         for prev_id in range(task_id):
             evaluate(mainnet, test_loaders[prev_id], task_class_registry[prev_id], prev_id)
 
-# No h, 1
+# No hippocampus, lambda 1
 # Final Task 10 Accuracy:
 # Task 10 Accuracy: 47.70%
 
@@ -230,7 +226,7 @@ if __name__ == "__main__":
 # Task 8 Accuracy: 34.50%
 # Task 9 Accuracy: 36.20%
 
-# H, 1
+# Hippocampus, lambda 1
 # Final Task 10 Accuracy:
 # Task 10 Accuracy: 48.00%
 
