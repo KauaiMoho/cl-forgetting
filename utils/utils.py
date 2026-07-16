@@ -59,18 +59,15 @@ def compute_mas_fast(model, loader, max_batches=2):
 def compute_consolidation_loss(model, importance_cache, param_snapshot):
     if param_snapshot is None:
         return torch.tensor(0.0, device=DEVICE)
-
     importance = importance_cache.combined_importance()
     layers = model.get_layers()
     total_loss = torch.tensor(0.0, device=DEVICE)
-
     for i, layer in enumerate(layers):
         layer_importance = importance[i]
         for name, param in layer.named_parameters():
             old_key = f"layer{i}_{name}"
             if old_key not in param_snapshot:
                 continue
-            delta = (param - param_snapshot[old_key]).pow(2).sum()
+            delta = (param - param_snapshot[old_key]).pow(2).mean()  # mean, not sum
             total_loss = total_loss + layer_importance * delta
-
     return total_loss

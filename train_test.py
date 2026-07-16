@@ -6,7 +6,7 @@ from models import models
 import math
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EWC_LAMBDA = 1
+EWC_LAMBDA = 1000
 
 class SITracker:
     def __init__(self, model):
@@ -33,15 +33,20 @@ class SITracker:
 
 
 class ImportanceCache:
-    def __init__(self):
+
+    def __init__(self, gamma=1.0):
         self.fisher = None
         self.mas = None
         self.si = None
+        self.gamma = gamma  # 1.0 = no decay, < 1.0 down-weights old importance
 
     def update(self, fisher, mas, si):
-        self.fisher = fisher
-        self.mas = mas
-        self.si = si
+        if self.fisher is None:
+            self.fisher, self.mas, self.si = fisher, mas, si
+        else:
+            self.fisher = [self.gamma * f_old + f_new for f_old, f_new in zip(self.fisher, fisher)]
+            self.mas    = [self.gamma * m_old + m_new for m_old, m_new in zip(self.mas, mas)]
+            self.si     = [self.gamma * s_old + s_new for s_old, s_new in zip(self.si, si)]
 
     def build_features(self, num_layers, task_id):
         fisher_n = utils.normalize_scores(self.fisher)
@@ -167,11 +172,11 @@ def evaluate(model, test_loader, eval_task_classes, eval_task_id):
 
 if __name__ == "__main__":
     torch.manual_seed(17)
-    # train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
-    # mainnet = models.CIFARNet().to(DEVICE)
+    train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
+    mainnet = models.CIFARNet().to(DEVICE)
 
-    train_loaders, test_loaders = data.get_dataloaders_MNIST([(0, 1), (2, 4), (5, 7), (8, 9)])
-    mainnet = models.MNISTNet().to(DEVICE)
+    # train_loaders, test_loaders = data.get_dataloaders_MNIST([(0, 1), (2, 4), (5, 7), (8, 9)])
+    # mainnet = models.MNISTNet().to(DEVICE)
 
     num_layers = len(mainnet.get_layers())
     hippocampus = models.Hippocampus(num_layers).to(DEVICE)
@@ -240,3 +245,19 @@ if __name__ == "__main__":
 # Task 7 Accuracy: 37.60%
 # Task 8 Accuracy: 38.70%
 # Task 9 Accuracy: 38.70%
+
+
+# New Params/Hippocampus/ImportanceCache, lamda 100
+# Final Task 10 Accuracy:
+# Task 10 Accuracy: 69.70%
+
+# Post-Task 10 Verification Summary:
+# Task 1 Accuracy: 31.10%
+# Task 2 Accuracy: 38.40%
+# Task 3 Accuracy: 23.70%
+# Task 4 Accuracy: 34.00%
+# Task 5 Accuracy: 37.40%
+# Task 6 Accuracy: 42.60%
+# Task 7 Accuracy: 50.70%
+# Task 8 Accuracy: 42.70%
+# Task 9 Accuracy: 50.40%
