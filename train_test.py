@@ -6,7 +6,7 @@ from models import models
 import math
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EWC_LAMBDA = 1000
+EWC_LAMBDA = 0
 
 class SITracker:
     def __init__(self, model):
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     importance_cache = ImportanceCache()
 
     optimizer = optim.Adam(mainnet.parameters(), lr=1e-3)
-    hippocampus_optimizer = optim.Adam(hippocampus.parameters(), lr=1e-4)
+    hippocampus_optimizer = optim.SGD(hippocampus.parameters(), lr=1e-4) # Adam check scaling
 
     task_class_registry = {}
     param_snapshot = None

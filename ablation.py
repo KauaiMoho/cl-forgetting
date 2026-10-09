@@ -5,7 +5,7 @@ from utils import data, utils
 from models import models
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EWC_LAMBDA = 1
+EWC_LAMBDA = 0
 
 class SITracker:
     def __init__(self, model):
