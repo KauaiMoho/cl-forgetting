@@ -130,14 +130,12 @@ def train(
             si_tracker.update(model)
             optimizer.step()
 
-            hippocampus_optimizer.zero_grad()
-            combined_signal = 0.5 * layer_signals + 0.5 * position_prior
-            baseline = combined_signal.mean()
-            pseudo_grad = (combined_signal - baseline).detach() * 0.1
-            pseudo_grad += 0.05 * (plasticities.detach() - 0.5)
-            plasticities.backward(gradient=pseudo_grad)
-            hippocampus_optimizer.step()
-
+            #Todo, implement v2
+            # Needs small replay buf, but will instead use gradients from current training along with relative importance measure
+            # to output modified gradients to minimize forgetting. Main model will recieve those modified gradients.
+            # Hippocampus Model will be trained on then the accuracy of those new gradients 
+            # from the main model on both some old tasks and some new ones.
+                # Could also replace hippocampus for a mathematical energy based optimizer - improving speed/possible few shot learning.
         fisher = utils.compute_fisher_fast(model, train_loader, current_task_classes)
         mas = utils.compute_mas_fast(model, train_loader)
         importance_cache.update(fisher, mas, si)
@@ -172,11 +170,11 @@ def evaluate(model, test_loader, eval_task_classes, eval_task_id):
 
 if __name__ == "__main__":
     torch.manual_seed(17)
-    train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
-    mainnet = models.CIFARNet().to(DEVICE)
+    # train_loaders, test_loaders = data.get_dataloaders_CIFAR100(num_tasks=10, classes_per_task=10)
+    # mainnet = models.CIFARNet().to(DEVICE)
 
-    # train_loaders, test_loaders = data.get_dataloaders_MNIST([(0, 1), (2, 4), (5, 7), (8, 9)])
-    # mainnet = models.MNISTNet().to(DEVICE)
+    train_loaders, test_loaders = data.get_dataloaders_MNIST([(0, 1), (2, 4), (5, 7), (8, 9)])
+    mainnet = models.MNISTNet().to(DEVICE)
 
     num_layers = len(mainnet.get_layers())
     hippocampus = models.Hippocampus(num_layers).to(DEVICE)
